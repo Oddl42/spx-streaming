@@ -1,0 +1,113 @@
+name: spx-stock-streaming
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python - 3.11 statt 3.13 für bessere PySpark Kompatibilität
+  - python=3.11
+  - pip
+  
+  # ============================================
+  # Core Data Processing & Streaming
+  # ============================================
+  - pyspark=3.5.*                    # Apache Spark für Streaming
+  - pandas=2.2.*
+  - numpy=1.26.*
+  - pyarrow                          # Für effiziente Datenverarbeitung
+  - kafka-python                     # Kafka Client für Spark Streaming
+  # ============================================
+  # Database & Caching
+  # ============================================
+  - psycopg2                         # PostgreSQL/TimescaleDB Driver
+  - sqlalchemy=2.0.*
+  - redis                            # Redis Client für Caching
+  
+  # ============================================
+  # HTTP & WebSocket Clients
+  # ============================================
+  - requests
+  - aiohttp                          # Async HTTP Client
+  - websockets                       # Async WebSocket (statt websocket-client)
+  - python-dotenv                    # Env Variablen Management
+  
+  # ============================================
+  # Visualization (Plotly Dash Focus)
+  # ============================================
+  - dash=2.17.*
+  - plotly=5.22.*
+  - dash-bootstrap-components        # Bootstrap Styling für Dash
+  - python-kaleido                          # Static Image Export (optional)
+  - dash-daq                       # DAQ Components (Slider, etc.)  
+  - dash-table                     # Advanced Tables
+  
+  # Optional: Andere Viz Tools (auskommentiert, falls später benötigt)
+  # - bokeh
+  # - hvplot
+  # - holoviews
+  # - panel
+  
+  # ============================================
+  # Timezone & Date Handling
+  # ============================================
+  - pytz
+  - python-dateutil
+  
+  # ============================================
+  # Configuration & Settings
+  # ============================================
+  - pydantic=2.7.*
+  - pydantic-settings
+  - pyyaml                           # Für config.yaml
+  
+  # ============================================
+  # Utilities
+  # ============================================
+  - tenacity                         # Retry Logic
+  - click                            # CLI Tool Building
+  - tqdm                             # Progress Bars
+  
+  # ============================================
+  # Development & Testing
+  # ============================================
+  - pytest
+  - pytest-asyncio                   # Async Tests
+  - pytest-cov                       # Coverage Reports
+  - black                            # Code Formatting
+  - flake8                           # Linting
+  - ipykernel                        # Jupyter Support
+  - ipython
+  
+  # ============================================
+  # Spyder IDE (Development only)
+  # ============================================
+  - spyder-kernels
+  # - spyder  # Wird separat installiert im Setup-Script
+  
+  # ============================================
+  # Pip-only packages
+  # ============================================
+  - pip:
+    # Massive.io API Client
+    - massive>=0.2.0
+    
+    # Technical Analysis
+    #- pandas-ta>=0.3.14  nicht mit Python 3.11 kompatibel
+    - pandas-ta-classical
+    
+    # TimescaleDB Toolkit (falls benötigt)
+    - timescaledb     # timescaledb-toolkit gibt es nicht
+    
+    # Directory Tree Visualization
+    - tree
+    
+    # Logging & Monitoring
+    - colorlog                       # Colored Logs
+    - python-json-logger             # JSON Logging
+    
+    # Data Validation
+    - cerberus                       # Schema Validation
+    
+    # Performance Monitoring
+    - py-cpuinfo                     # CPU Info
+    - psutil                         # System Monitoring
