@@ -1,0 +1,11 @@
+# Komponenten-Flow:
+
+1. Ticker Selection → 2. WebSocket Connection → 3. Spark Streaming
+                                                        ↓
+4. Data Processing ← 5. Redis Cache ← 6. Market Hours Check
+        ↓
+7. Database Storage & 8. Real-time Updates → 9. Dash Callbacks
+                                                    ↓
+                                        10. Chart Updates (Candlestick/Line)
+                                        11. Volume Chart
+                                        12. Ticker Table Updates
