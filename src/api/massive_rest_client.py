@@ -63,11 +63,22 @@ class MassiveRESTClient:
             to_date: End-Datum (YYYY-MM-DD)
             limit: Max. Anzahl Results (max 50000)
         """
-        if not from_date:
-            # Default: Letzte 10 Handelstage
-            from_date = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
         if not to_date:
             to_date = datetime.now().strftime('%Y-%m-%d')
+        
+        if not from_date:
+            # ✨ GEÄNDERT: Berechne from_date basierend auf timespan
+            if timespan == 'minute':
+                # Für Minuten-Daten: Letzte 3 Handelstage (ca. 1170 Minuten)
+                from_date = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
+            elif timespan == 'hour':
+                # Für Stunden-Daten: Letzte 30 Tage
+                from_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+            elif timespan == 'day':
+                # Für Tages-Daten: Letzte 5 Jahre
+                from_date = (datetime.now() - timedelta(days=5*365)).strftime('%Y-%m-%d')
+            else:
+                from_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
         
         endpoint = (f"{self.BASE_URL}/aggs/ticker/{ticker}/range/"
                    f"{multiplier}/{timespan}/{from_date}/{to_date}")
@@ -79,12 +90,17 @@ class MassiveRESTClient:
         }
         
         try:
+            print(f"\n🔍 API Request: {endpoint}")
+            print(f"   Params: {params}")
+            print(f"   Zeitraum: {from_date} bis {to_date}")
+            
             response = self.session.get(endpoint, params=params)
             response.raise_for_status()
             data = response.json()
             
-            if 'results' not in data:
-                print(f"Keine Daten für {ticker}")
+            if 'results' not in data or not data['results']:
+                print(f"⚠️  Keine Daten für {ticker} im Zeitraum {from_date} bis {to_date}")
+                print(f"   API Response: {data}")
                 return pd.DataFrame()
             
             df = pd.DataFrame(data['results'])
@@ -107,11 +123,17 @@ class MassiveRESTClient:
                     'volume', 'vwap', 'transactions']]
             
             print(f"✓ {len(df)} Datenpunkte für {ticker} geladen")
+            print(f"   Erster Punkt: {df['timestamp'].min()}")
+            print(f"   Letzter Punkt: {df['timestamp'].max()}")
+            
             return df
             
         except Exception as e:
             print(f"✗ Fehler beim Laden von {ticker}: {e}")
+            import traceback
+            traceback.print_exc()
             return pd.DataFrame()
+    
     
     def get_last_quote(self, ticker: str) -> Dict:
         """Lädt letztes Quote für einen Ticker"""

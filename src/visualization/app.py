@@ -1,7 +1,7 @@
 # src/visualization/app.py
 """
 S&P 500 Stock Streaming Platform - Main Application
-Integriert Market Hours Logic
+Mit verbesserter Ticker-Auswahl für Charts
 """
 
 import dash
@@ -112,6 +112,19 @@ def create_streaming_tab():
                            }),
             ], style={'marginBottom': '20px'}),
             
+            # 🆕 NEU: Chart Ticker Auswahl
+            html.Div([
+                html.Label("📊 Ticker für Chart:", 
+                          style={'fontWeight': 'bold', 'marginRight': '10px'}),
+                dcc.Dropdown(
+                    id='chart-ticker-dropdown',
+                    options=[],
+                    placeholder='Wählen Sie einen Ticker für den Chart...',
+                    style={'width': '300px', 'display': 'inline-block'},
+                    clearable=False
+                ),
+            ], id='chart-ticker-selector', style={'marginBottom': '20px', 'display': 'none'}),
+            
             # Buttons
             html.Div([
                 html.Button('📊 Historische Daten laden', 
@@ -169,7 +182,12 @@ def create_streaming_tab():
         
         # Chart
         html.Div([
-            html.H3("📈 Price Chart (Regular Market Hours Only)"),
+            html.Div([
+                html.H3("📈 Price Chart (Regular Market Hours Only)", 
+                       style={'display': 'inline-block', 'marginRight': '20px'}),
+                html.Span(id='chart-ticker-label', 
+                         style={'fontSize': '18px', 'color': '#666', 'fontStyle': 'italic'})
+            ]),
             dcc.Graph(id='price-chart', style={'height': '600px'})
         ], style={'marginTop': '30px'}),
         
@@ -210,6 +228,31 @@ def load_ticker_options(tab):
     ]
     
     return options, df.to_dict('records')
+
+
+# 🆕 NEU: Callback für Chart-Ticker-Dropdown
+@app.callback(
+    Output('chart-ticker-dropdown', 'options'),
+    Output('chart-ticker-dropdown', 'value'),
+    Output('chart-ticker-selector', 'style'),
+    Input('ticker-dropdown', 'value')
+)
+def update_chart_ticker_options(selected_tickers):
+    """
+    Aktualisiert die Dropdown-Optionen für den Chart basierend auf ausgewählten Tickern
+    """
+    if not selected_tickers or len(selected_tickers) == 0:
+        # Verstecke Dropdown wenn keine Ticker ausgewählt
+        return [], None, {'marginBottom': '20px', 'display': 'none'}
+    
+    # Erstelle Optionen aus ausgewählten Tickern
+    options = [{'label': ticker, 'value': ticker} for ticker in selected_tickers]
+    
+    # Setze ersten Ticker als default
+    default_value = selected_tickers[0]
+    
+    # Zeige Dropdown
+    return options, default_value, {'marginBottom': '20px', 'display': 'block'}
 
 
 # Callback: Market Status Update (Live)
@@ -349,6 +392,9 @@ def update_ticker_table(selected_symbols, all_tickers):
     return table
 
 
+# 🆕 AKTUALISIERT: Historische Daten mit Chart-Ticker-Auswahl
+# src/visualization/app.py
+
 # Callback: Historische Daten laden mit Market Hours Filter
 @app.callback(
     Output('price-chart', 'figure'),
@@ -388,7 +434,7 @@ def load_historical_data(n_clicks, selected_tickers):
         return fig
     
     print(f"✓ {len(df)} Datenpunkte geladen")
-    print(f"Zeitspanne: {df['timestamp'].min()} bis {df['timestamp'].max()}")
+    print(f"Zeitspanne VOR Filter: {df['timestamp'].min()} bis {df['timestamp'].max()}")
     
     # ✨ WICHTIG: Filter auf Regular Market Hours
     print("\n🔍 Filtere auf Regular Market Hours...")
@@ -408,7 +454,7 @@ def load_historical_data(n_clicks, selected_tickers):
         )
         return fig
     
-    print(f"Gefilterte Zeitspanne: {df_filtered['timestamp'].min()} bis {df_filtered['timestamp'].max()}")
+    print(f"Zeitspanne NACH Filter: {df_filtered['timestamp'].min()} bis {df_filtered['timestamp'].max()}")
     
     # Erstelle Candlestick Chart
     fig = go.Figure()
@@ -436,10 +482,10 @@ def load_historical_data(n_clicks, selected_tickers):
             opacity=0.7
         ))
     
-    # Layout
+    # Layout mit Wochenend-Entfernung
     fig.update_layout(
         title={
-            'text': f'{ticker} - Historical Data (Regular Market Hours Only)<br><sub>{len(df_filtered)} bars | {df_filtered["timestamp"].min().strftime("%Y-%m-%d")} to {df_filtered["timestamp"].max().strftime("%Y-%m-%d")}</sub>',
+            'text': f'{ticker} - Historical Data (Regular Market Hours)<br><sub>{len(df_filtered)} bars | {df_filtered["timestamp"].min().strftime("%Y-%m-%d")} to {df_filtered["timestamp"].max().strftime("%Y-%m-%d")}</sub>',
             'x': 0.5,
             'xanchor': 'center',
             'font': {'size': 20}
@@ -453,7 +499,14 @@ def load_historical_data(n_clicks, selected_tickers):
             rangeslider=dict(visible=False),
             type='date',
             showgrid=True,
-            gridcolor='#e0e0e0'
+            gridcolor='#e0e0e0',
+            # ✨ NEU: Entferne Wochenenden und Nicht-Handelsstunden
+            rangebreaks=[
+                # Wochenenden ausblenden (Samstag & Sonntag)
+                dict(bounds=["sat", "mon"]),
+                # Nicht-Handelsstunden ausblenden (16:00 - 09:30 ET)
+                dict(bounds=[16, 9.5], pattern="hour"),
+            ]
         ),
         yaxis=dict(
             showgrid=True,
@@ -468,9 +521,9 @@ def load_historical_data(n_clicks, selected_tickers):
         )
     )
     
-    # Market Hours Hinweis als Annotation
+    # Market Hours Hinweis
     fig.add_annotation(
-        text="📅 Nur Regular Market Hours (Mo-Fr 9:30 AM - 4:00 PM ET)",
+        text="📅 Nur Regular Market Hours (Mo-Fr 9:30 AM - 4:00 PM ET) | Wochenenden ausgeblendet",
         xref="paper", yref="paper",
         x=0.5, y=-0.12,
         showarrow=False,
