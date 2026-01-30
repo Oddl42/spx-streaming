@@ -1,15 +1,18 @@
 # src/visualization/app.py
 """
-S&P 500 Stock Streaming Platform - Main Application
-Mit verbesserter Ticker-Auswahl für Charts
+S&P 500 Stock Streaming Platform - Full Application
+MIT LIVE WEBSOCKET STREAMING & REAL-TIME CHARTS
 """
 
 import dash
-from dash import dcc, html, Input, Output, State, dash_table
+from dash import dcc, html, Input, Output, State, dash_table, ctx, ALL
 import plotly.graph_objs as go
+from plotly.subplots import make_subplots
 import pandas as pd
 from pathlib import Path
 import sys
+import time
+from datetime import datetime
 
 # Füge src zum Path hinzu
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -17,14 +20,25 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 from src.utils.helpers import SP500TickerLoader
 from src.api.massive_rest_client import MassiveRESTClient
 from src.utils.market_hours import MarketHours, is_market_open, get_market_status_message
+from src.streaming.websocket_client import StockWebSocketClient
+from src.streaming.stream_manager import StreamDataManager
 
-# App initialisieren
+# ============================================
+# App & Globals
+# ============================================
+
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
 app.title = "S&P 500 Stock Streaming"
 
 # Globals
 ticker_loader = SP500TickerLoader()
 api_client = MassiveRESTClient()
+
+# Streaming Components (Global)
+ws_client: StockWebSocketClient = None
+stream_manager: StreamDataManager = None
+streaming_active = False
+current_aggregation = 'minute'
 
 # ============================================
 # App Layout
@@ -43,12 +57,14 @@ app.layout = html.Div([
     
     html.Div(id='tab-content', style={'padding': '20px'}),
     
-    # Interval für Market Status Updates (alle 10 Sekunden)
-    dcc.Interval(
-        id='interval-market-status',
-        interval=10*1000,  # 10 Sekunden
-        n_intervals=0
-    )
+    # Intervals für Updates
+    dcc.Interval(id='interval-market-status', interval=10*1000, n_intervals=0),
+    dcc.Interval(id='interval-live-chart', interval=2*1000, n_intervals=0, disabled=True),
+    dcc.Interval(id='interval-stats', interval=5*1000, n_intervals=0, disabled=True),
+    
+    # Stores
+    dcc.Store(id='streaming-state', data={'active': False, 'aggregation': 'minute'}),
+    
 ], style={'fontFamily': 'Arial, sans-serif'})
 
 
@@ -58,138 +74,112 @@ app.layout = html.Div([
 
 def create_streaming_tab():
     return html.Div([
-        html.H2("🎯 Real-time Stock Data & Market Hours Demo"),
+        html.H2("🎯 Real-time Stock Streaming with WebSocket"),
         
-        # Market Hours Status (wird live aktualisiert)
-        html.Div(
-            id='market-status-card',
-            style={
-                'marginBottom': '30px',
-                'padding': '0'
-            }
-        ),
+        # Market Hours Status
+        html.Div(id='market-status-card', style={'marginBottom': '30px'}),
         
-        # Info Box
+        # Controls Row
         html.Div([
-            html.H4("ℹ️ Market Hours Information"),
-            html.Ul([
-                html.Li("Regular Market Hours: 9:30 AM - 4:00 PM ET (Eastern Time)"),
-                html.Li("Pre-Market: 4:00 AM - 9:30 AM ET"),
-                html.Li("After-Hours: 4:00 PM - 8:00 PM ET"),
-                html.Li("Charts zeigen nur Daten während Regular Market Hours"),
-                html.Li("Wochenenden und Feiertage werden automatisch gefiltert")
-            ])
-        ], style={
-            'backgroundColor': '#e3f2fd',
-            'padding': '15px',
-            'borderRadius': '8px',
-            'marginBottom': '20px',
-            'border': '1px solid #2196f3'
-        }),
-        
-        # Ticker Selection
-        html.Div([
-            html.H3("📋 Ticker Auswahl"),
+            # Left: Ticker Selection
             html.Div([
+                html.H3("📋 Ticker Auswahl"),
                 dcc.Dropdown(
                     id='ticker-dropdown',
                     options=[],
                     multi=True,
-                    placeholder='Ticker auswählen (z.B. AAPL, MSFT, GOOGL)...',
-                    style={'width': '70%', 'display': 'inline-block'}
+                    placeholder='Ticker auswählen...',
                 ),
-                html.Button('Alle S&P 500 laden (Top 10)', 
-                           id='load-all-btn',
-                           n_clicks=0,
-                           style={
-                               'marginLeft': '10px',
-                               'padding': '10px 20px',
-                               'backgroundColor': '#4CAF50',
-                               'color': 'white',
-                               'border': 'none',
-                               'borderRadius': '4px',
-                               'cursor': 'pointer'
-                           }),
-            ], style={'marginBottom': '20px'}),
+                html.Button('Top 10 laden', id='load-top10-btn', n_clicks=0,
+                           style={'marginTop': '10px', 'marginRight': '10px'}),
+            ], style={'width': '48%', 'display': 'inline-block', 'verticalAlign': 'top'}),
             
-            # 🆕 NEU: Chart Ticker Auswahl
+            # Right: Streaming Controls
             html.Div([
-                html.Label("📊 Ticker für Chart:", 
-                          style={'fontWeight': 'bold', 'marginRight': '10px'}),
-                dcc.Dropdown(
-                    id='chart-ticker-dropdown',
-                    options=[],
-                    placeholder='Wählen Sie einen Ticker für den Chart...',
-                    style={'width': '300px', 'display': 'inline-block'},
-                    clearable=False
+                html.H3("🎮 Streaming Controls"),
+                
+                # Aggregation Selection
+                html.Label("Aggregation:", style={'fontWeight': 'bold', 'marginRight': '10px'}),
+                dcc.RadioItems(
+                    id='aggregation-selector',
+                    options=[
+                        {'label': ' Minuten-Aggregation (AM.*)', 'value': 'minute'},
+                        {'label': ' Sekunden-Aggregation (A.*)', 'value': 'second'}
+                    ],
+                    value='minute',
+                    inline=True,
+                    style={'marginBottom': '15px'}
                 ),
-            ], id='chart-ticker-selector', style={'marginBottom': '20px', 'display': 'none'}),
-            
-            # Buttons
-            html.Div([
-                html.Button('📊 Historische Daten laden', 
-                           id='load-historical-btn',
-                           n_clicks=0,
-                           style={
-                               'marginRight': '10px',
-                               'padding': '12px 24px',
-                               'backgroundColor': '#2196f3',
-                               'color': 'white',
-                               'border': 'none',
-                               'borderRadius': '4px',
-                               'cursor': 'pointer',
-                               'fontSize': '14px'
-                           }),
                 
-                html.Button('🧪 Market Hours Test', 
-                           id='test-market-hours-btn',
-                           n_clicks=0,
-                           style={
-                               'marginRight': '10px',
-                               'padding': '12px 24px',
-                               'backgroundColor': '#ff9800',
-                               'color': 'white',
-                               'border': 'none',
-                               'borderRadius': '4px',
-                               'cursor': 'pointer',
-                               'fontSize': '14px'
-                           }),
+                # Chart Type
+                html.Label("Chart Type:", style={'fontWeight': 'bold', 'marginRight': '10px'}),
+                dcc.RadioItems(
+                    id='chart-type-selector',
+                    options=[
+                        {'label': ' Candlestick', 'value': 'candlestick'},
+                        {'label': ' Line Chart', 'value': 'line'}
+                    ],
+                    value='candlestick',
+                    inline=True,
+                    style={'marginBottom': '15px'}
+                ),
                 
-                html.Button('🔴 Streaming starten', 
-                           id='streaming-btn',
-                           n_clicks=0,
-                           disabled=True,
-                           style={
-                               'padding': '12px 24px',
-                               'backgroundColor': '#ccc',
-                               'color': 'white',
-                               'border': 'none',
-                               'borderRadius': '4px',
-                               'cursor': 'not-allowed',
-                               'fontSize': '14px'
-                           }),
-            ], style={'marginBottom': '20px'}),
-            
-            # Test Output
-            html.Div(id='test-output', style={'marginTop': '20px'})
+                # VWAP Toggle
+                html.Div([
+                    html.Label("VWAP:", style={'fontWeight': 'bold', 'marginRight': '10px'}),
+                    dcc.Checklist(
+                        id='vwap-toggle',
+                        options=[{'label': ' Anzeigen', 'value': 'show'}],
+                        value=[],
+                        inline=True
+                    )
+                ], style={'marginBottom': '15px'}),
+                
+                # Chart Ticker Selection
+                html.Div([
+                    html.Label("📊 Ticker für Chart:", style={'fontWeight': 'bold'}),
+                    dcc.Dropdown(
+                        id='chart-ticker-dropdown',
+                        placeholder='Wählen Sie einen Ticker...',
+                        clearable=False
+                    )
+                ], id='chart-ticker-selector', style={'marginTop': '10px', 'display': 'none'}),
+                
+            ], style={'width': '48%', 'display': 'inline-block', 'verticalAlign': 'top', 
+                     'marginLeft': '4%'}),
         ]),
         
-        # Selected Tickers Table
+        # Streaming Buttons
+        html.Div([
+            html.Button('🟢 Streaming Starten', id='start-streaming-btn', n_clicks=0,
+                       style={'padding': '12px 30px', 'fontSize': '16px', 'marginRight': '10px',
+                             'backgroundColor': '#28a745', 'color': 'white', 'border': 'none',
+                             'borderRadius': '5px', 'cursor': 'pointer'}),
+            html.Button('🔴 Streaming Stoppen', id='stop-streaming-btn', n_clicks=0, disabled=True,
+                       style={'padding': '12px 30px', 'fontSize': '16px',
+                             'backgroundColor': '#dc3545', 'color': 'white', 'border': 'none',
+                             'borderRadius': '5px'}),
+            html.Span(id='streaming-status', style={'marginLeft': '20px', 'fontSize': '16px'})
+        ], style={'marginTop': '20px', 'marginBottom': '20px'}),
+        
+        # Statistics Box
+        html.Div(id='streaming-stats', style={
+            'padding': '15px', 'backgroundColor': '#f8f9fa', 'borderRadius': '5px',
+            'marginBottom': '20px'
+        }),
+        
+        # Ticker Table
         html.Div([
             html.H3("✅ Ausgewählte Ticker"),
             html.Div(id='ticker-table')
-        ], style={'marginTop': '30px'}),
+        ], style={'marginTop': '30px', 'marginBottom': '30px'}),
         
-        # Chart
+        # Live Charts
         html.Div([
-            html.Div([
-                html.H3("📈 Price Chart (Regular Market Hours Only)", 
-                       style={'display': 'inline-block', 'marginRight': '20px'}),
-                html.Span(id='chart-ticker-label', 
-                         style={'fontSize': '18px', 'color': '#666', 'fontStyle': 'italic'})
-            ]),
-            dcc.Graph(id='price-chart', style={'height': '600px'})
-        ], style={'marginTop': '30px'}),
+            html.H3("📈 Live Chart"),
+            dcc.Graph(id='live-chart', style={'height': '600px'}),
+            dcc.Graph(id='volume-chart', style={'height': '200px'})
+        ]),
         
         # Hidden Stores
         dcc.Store(id='all-tickers-store'),
@@ -201,7 +191,7 @@ def create_streaming_tab():
 # Callbacks
 # ============================================
 
-# Callback: Tab Content
+# Tab Content
 @app.callback(
     Output('tab-content', 'children'),
     Input('main-tabs', 'value')
@@ -212,25 +202,68 @@ def render_tab_content(active_tab):
     return html.Div("Tab in Entwicklung...")
 
 
-# Callback: Ticker Dropdown Options laden
+# Load Ticker Options
 @app.callback(
     Output('ticker-dropdown', 'options'),
     Output('all-tickers-store', 'data'),
     Input('main-tabs', 'value')
 )
 def load_ticker_options(tab):
-    """Lade S&P 500 Ticker aus JSON"""
     df = ticker_loader.load_tickers()
-    
     options = [
         {'label': f"{row['Symbol']} - {row['Security']}", 'value': row['Symbol']}
         for _, row in df.iterrows()
     ]
-    
     return options, df.to_dict('records')
 
 
-# 🆕 NEU: Callback für Chart-Ticker-Dropdown
+# Market Status Update
+@app.callback(
+    Output('market-status-card', 'children'),
+    Input('interval-market-status', 'n_intervals')
+)
+def update_market_status(n_intervals):
+    status = MarketHours.get_market_status()
+    
+    if status['is_open']:
+        bg_color, border_color, text_color = '#d4edda', '#28a745', '#155724'
+    elif status['session'] in ['pre_market', 'after_hours']:
+        bg_color, border_color, text_color = '#fff3cd', '#ffc107', '#856404'
+    else:
+        bg_color, border_color, text_color = '#f8d7da', '#dc3545', '#721c24'
+    
+    time_str = status['current_time_et'].strftime('%Y-%m-%d %I:%M:%S %p ET')
+    weekday = status['current_time_et'].strftime('%A')
+    
+    return html.Div([
+        html.Div([
+            html.H3([
+                html.Span(status['emoji'], style={'marginRight': '15px', 'fontSize': '32px'}),
+                html.Span(status['message'])
+            ], style={'margin': '0', 'color': text_color}),
+            html.P(f"Zeit: {time_str} ({weekday})", 
+                  style={'margin': '10px 0', 'fontSize': '16px'}),
+        ], style={'padding': '20px'})
+    ], style={'backgroundColor': bg_color, 'border': f'3px solid {border_color}',
+             'borderRadius': '10px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'})
+
+
+# Load Top 10 Tickers
+@app.callback(
+    Output('ticker-dropdown', 'value'),
+    Input('load-top10-btn', 'n_clicks'),
+    State('all-tickers-store', 'data'),
+    prevent_initial_call=True
+)
+def load_top_tickers(n_clicks, all_tickers):
+    if n_clicks > 0 and all_tickers:
+        # Top 10: AAPL, MSFT, GOOGL, AMZN, TSLA, META, NVDA, JPM, V, JNJ
+        top_symbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'V', 'JNJ']
+        return top_symbols[:5]  # Nur 5 für Demo (weniger API Last)
+    return []
+
+
+# Update Chart Ticker Dropdown
 @app.callback(
     Output('chart-ticker-dropdown', 'options'),
     Output('chart-ticker-dropdown', 'value'),
@@ -238,342 +271,294 @@ def load_ticker_options(tab):
     Input('ticker-dropdown', 'value')
 )
 def update_chart_ticker_options(selected_tickers):
-    """
-    Aktualisiert die Dropdown-Optionen für den Chart basierend auf ausgewählten Tickern
-    """
-    if not selected_tickers or len(selected_tickers) == 0:
-        # Verstecke Dropdown wenn keine Ticker ausgewählt
-        return [], None, {'marginBottom': '20px', 'display': 'none'}
+    if not selected_tickers:
+        return [], None, {'marginTop': '10px', 'display': 'none'}
     
-    # Erstelle Optionen aus ausgewählten Tickern
     options = [{'label': ticker, 'value': ticker} for ticker in selected_tickers]
-    
-    # Setze ersten Ticker als default
-    default_value = selected_tickers[0]
-    
-    # Zeige Dropdown
-    return options, default_value, {'marginBottom': '20px', 'display': 'block'}
+    default = selected_tickers[0]
+    return options, default, {'marginTop': '10px', 'display': 'block'}
 
 
-# Callback: Market Status Update (Live)
-@app.callback(
-    Output('market-status-card', 'children'),
-    Input('interval-market-status', 'n_intervals')
-)
-def update_market_status(n_intervals):
-    """
-    Aktualisiert Market Status alle 10 Sekunden
-    """
-    status = MarketHours.get_market_status()
-    
-    # Styling basierend auf Status
-    if status['is_open']:
-        bg_color = '#d4edda'
-        border_color = '#28a745'
-        text_color = '#155724'
-    elif status['session'] in ['pre_market', 'after_hours']:
-        bg_color = '#fff3cd'
-        border_color = '#ffc107'
-        text_color = '#856404'
-    else:
-        bg_color = '#f8d7da'
-        border_color = '#dc3545'
-        text_color = '#721c24'
-    
-    # Zeitformatierung
-    time_str = status['current_time_et'].strftime('%Y-%m-%d %I:%M:%S %p ET')
-    weekday = status['current_time_et'].strftime('%A')
-    
-    # Erstelle Status Card
-    status_card = html.Div([
-        html.Div([
-            html.H3([
-                html.Span(status['emoji'], style={'marginRight': '15px', 'fontSize': '32px'}),
-                html.Span(status['message'])
-            ], style={'margin': '0', 'color': text_color}),
-            
-            html.Div([
-                html.P([
-                    html.Strong("Aktuelle Zeit: "),
-                    f"{time_str} ({weekday})"
-                ], style={'margin': '10px 0 5px 0', 'fontSize': '16px'}),
-                
-                html.P([
-                    html.Strong("Session: "),
-                    status['session'].replace('_', ' ').title()
-                ], style={'margin': '5px 0', 'fontSize': '14px'}),
-            ]),
-            
-            # Nächste Öffnung/Schließung
-            html.Div([
-                html.P(
-                    f"🕒 Nächste Öffnung: {status['next_open'].strftime('%A, %I:%M %p ET')}" 
-                    if 'next_open' in status and status['next_open'] 
-                    else "",
-                    style={'margin': '5px 0', 'fontSize': '14px', 'fontStyle': 'italic'}
-                ),
-                html.P(
-                    f"⏰ Schließt um: {status['next_close'].strftime('%I:%M %p ET')}" 
-                    if 'next_close' in status and status['next_close'] 
-                    else "",
-                    style={'margin': '5px 0', 'fontSize': '14px', 'fontStyle': 'italic'}
-                ),
-            ]),
-        ], style={'padding': '20px'})
-        
-    ], style={
-        'backgroundColor': bg_color,
-        'border': f'3px solid {border_color}',
-        'borderRadius': '10px',
-        'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'
-    })
-    
-    return status_card
-
-
-# Callback: Alle Ticker laden (Top 10)
-@app.callback(
-    Output('ticker-dropdown', 'value'),
-    Input('load-all-btn', 'n_clicks'),
-    State('all-tickers-store', 'data'),
-    prevent_initial_call=True
-)
-def load_all_tickers(n_clicks, all_tickers):
-    if n_clicks > 0 and all_tickers:
-        # Lade nur erste 10 für Demo
-        symbols = [t['Symbol'] for t in all_tickers[:10]]
-        return symbols
-    return []
-
-
-# Callback: Ticker Table
+# Ticker Table
 @app.callback(
     Output('ticker-table', 'children'),
     Input('ticker-dropdown', 'value'),
-    State('all-tickers-store', 'data')
+    Input('interval-live-chart', 'n_intervals'),
+    State('all-tickers-store', 'data'),
+    State('streaming-state', 'data')
 )
-def update_ticker_table(selected_symbols, all_tickers):
+def update_ticker_table(selected_symbols, n_intervals, all_tickers, streaming_state):
     if not selected_symbols:
         return html.P("⚠️ Keine Ticker ausgewählt", style={'color': '#666'})
     
-    # Filter selected tickers
     df = pd.DataFrame(all_tickers)
-    selected_df = df[df['Symbol'].isin(selected_symbols)]
+    selected_df = df[df['Symbol'].isin(selected_symbols)].copy()
     
-    # Erstelle Tabelle
+    # Wenn Streaming aktiv, füge Live-Daten hinzu
+    if streaming_state['active'] and stream_manager:
+        for idx, row in selected_df.iterrows():
+            symbol = row['Symbol']
+            latest = stream_manager.get_latest_point(symbol)
+            if latest:
+                selected_df.at[idx, 'Last Price'] = f"${latest.get('close', 0):.2f}"
+                selected_df.at[idx, 'Volume'] = f"{latest.get('volume', 0):,}"
+                selected_df.at[idx, 'VWAP'] = f"${latest.get('vwap', 0):.2f}"
+            else:
+                selected_df.at[idx, 'Last Price'] = "N/A"
+                selected_df.at[idx, 'Volume'] = "N/A"
+                selected_df.at[idx, 'VWAP'] = "N/A"
+        
+        columns = ['Symbol', 'Security', 'GICS Sector', 'Last Price', 'Volume', 'VWAP']
+    else:
+        columns = ['Symbol', 'Security', 'GICS Sector', 'Headquarters Location']
+    
     table = dash_table.DataTable(
-        data=selected_df[['Symbol', 'Security', 'GICS Sector', 
-                         'Headquarters Location']].to_dict('records'),
-        columns=[
-            {'name': 'Symbol', 'id': 'Symbol'},
-            {'name': 'Name', 'id': 'Security'},
-            {'name': 'Sektor', 'id': 'GICS Sector'},
-            {'name': 'Hauptsitz', 'id': 'Headquarters Location'},
-        ],
-        style_cell={
-            'textAlign': 'left',
-            'padding': '10px',
-            'fontFamily': 'Arial'
-        },
-        style_header={
-            'backgroundColor': '#3498db',
-            'color': 'white',
-            'fontWeight': 'bold',
-            'textAlign': 'left'
-        },
+        data=selected_df[columns].to_dict('records'),
+        columns=[{'name': col, 'id': col} for col in columns],
+        style_cell={'textAlign': 'left', 'padding': '10px'},
+        style_header={'backgroundColor': '#3498db', 'color': 'white', 'fontWeight': 'bold'},
         style_data_conditional=[
-            {
-                'if': {'row_index': 'odd'},
-                'backgroundColor': '#f9f9f9'
-            }
+            {'if': {'row_index': 'odd'}, 'backgroundColor': '#f9f9f9'}
         ]
     )
-    
     return table
 
 
-# 🆕 AKTUALISIERT: Historische Daten mit Chart-Ticker-Auswahl
-# src/visualization/app.py
-
-# Callback: Historische Daten laden mit Market Hours Filter
+# Start Streaming
 @app.callback(
-    Output('price-chart', 'figure'),
-    Input('load-historical-btn', 'n_clicks'),
+    Output('streaming-state', 'data'),
+    Output('start-streaming-btn', 'disabled'),
+    Output('stop-streaming-btn', 'disabled'),
+    Output('interval-live-chart', 'disabled'),
+    Output('interval-stats', 'disabled'),
+    Output('streaming-status', 'children'),
+    Input('start-streaming-btn', 'n_clicks'),
+    Input('stop-streaming-btn', 'n_clicks'),
     State('ticker-dropdown', 'value'),
+    State('aggregation-selector', 'value'),
+    State('streaming-state', 'data'),
     prevent_initial_call=True
 )
-def load_historical_data(n_clicks, selected_tickers):
-    """
-    Lädt historische Daten und filtert auf Regular Market Hours
-    """
-    if not selected_tickers:
-        fig = go.Figure()
-        fig.add_annotation(
-            text="⚠️ Bitte wählen Sie zuerst einen Ticker aus",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5,
-            showarrow=False,
-            font=dict(size=18, color="gray")
-        )
-        return fig
+def control_streaming(start_clicks, stop_clicks, selected_tickers, aggregation, state):
+    global ws_client, stream_manager, streaming_active, current_aggregation
     
-    # Lade Daten für ersten Ticker
-    ticker = selected_tickers[0]
-    print(f"\n📊 Lade Daten für {ticker}...")
-    df = api_client.get_aggregates(ticker, timespan='minute', limit=500)
+    triggered_id = ctx.triggered_id
+    
+    # Start Streaming
+    if triggered_id == 'start-streaming-btn':
+        if not selected_tickers:
+            return state, False, True, True, True, html.Span("⚠️ Keine Ticker ausgewählt", 
+                                                             style={'color': 'orange'})
+        
+        try:
+            print(f"\n🚀 Starte WebSocket Streaming...")
+            print(f"   Ticker: {selected_tickers}")
+            print(f"   Aggregation: {aggregation}")
+            
+            # Initialize Components
+            stream_manager = StreamDataManager(max_points=600)
+            ws_client = StockWebSocketClient(aggregation=aggregation)
+            current_aggregation = aggregation
+            
+            # Set Message Callback
+            def handle_message(data):
+                symbol = data.get('symbol')
+                if symbol in selected_tickers:
+                    stream_manager.add_data_point(symbol, data)
+            
+            ws_client.set_message_callback(handle_message)
+            
+            # Subscribe & Start
+            ws_client.subscribe(selected_tickers)
+            ws_client.start()
+            
+            streaming_active = True
+            
+            new_state = {'active': True, 'aggregation': aggregation}
+            status = html.Span("🟢 Streaming AKTIV", 
+                             style={'color': 'green', 'fontWeight': 'bold'})
+            
+            return new_state, True, False, False, False, status
+            
+        except Exception as e:
+            print(f"✗ Streaming Start Fehler: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            status = html.Span(f"❌ Fehler: {str(e)}", style={'color': 'red'})
+            return state, False, True, True, True, status
+    
+    # Stop Streaming
+    elif triggered_id == 'stop-streaming-btn':
+        if ws_client:
+            ws_client.stop()
+        
+        streaming_active = False
+        ws_client = None
+        stream_manager = None
+        
+        new_state = {'active': False, 'aggregation': 'minute'}
+        status = html.Span("⚫ Streaming gestoppt", style={'color': 'gray'})
+        
+        return new_state, False, True, True, True, status
+    
+    return state, False, True, True, True, ""
+
+
+# Streaming Statistics
+@app.callback(
+    Output('streaming-stats', 'children'),
+    Input('interval-stats', 'n_intervals'),
+    State('streaming-state', 'data')
+)
+def update_streaming_stats(n_intervals, state):
+    if not state['active'] or not stream_manager:
+        return html.P("Streaming nicht aktiv", style={'color': '#666'})
+    
+    stats = stream_manager.get_statistics()
+    
+    return html.Div([
+        html.H4("📊 Streaming Statistiken", style={'marginBottom': '10px'}),
+        html.Div([
+            html.Div([
+                html.Strong("Gesamte Nachrichten: "),
+                html.Span(f"{stats['total_messages']:,}")
+            ], style={'display': 'inline-block', 'marginRight': '30px'}),
+            
+            html.Div([
+                html.Strong("Aktive Ticker: "),
+                html.Span(f"{stats['active_tickers']}")
+            ], style={'display': 'inline-block', 'marginRight': '30px'}),
+            
+            html.Div([
+                html.Strong("Aggregation: "),
+                html.Span(current_aggregation.title())
+            ], style={'display': 'inline-block'}),
+        ]),
+        
+        html.Div([
+            html.P("Buffer Status:", style={'fontWeight': 'bold', 'marginTop': '10px', 
+                                           'marginBottom': '5px'}),
+            html.Ul([
+                html.Li(f"{symbol}: {size} Datenpunkte")
+                for symbol, size in stats['buffer_sizes'].items()
+            ])
+        ]) if stats['buffer_sizes'] else None
+    ])
+
+
+# Live Chart Update
+@app.callback(
+    Output('live-chart', 'figure'),
+    Output('volume-chart', 'figure'),
+    Input('interval-live-chart', 'n_intervals'),
+    State('chart-ticker-dropdown', 'value'),
+    State('chart-type-selector', 'value'),
+    State('vwap-toggle', 'value'),
+    State('streaming-state', 'data')
+)
+def update_live_chart(n_intervals, ticker, chart_type, vwap_values, state):
+    if not state['active'] or not stream_manager or not ticker:
+        # Empty charts
+        fig_main = go.Figure()
+        fig_main.add_annotation(text="⏸️ Warte auf Streaming-Daten...",
+                               xref="paper", yref="paper", x=0.5, y=0.5,
+                               showarrow=False, font=dict(size=16, color="gray"))
+        
+        fig_volume = go.Figure()
+        return fig_main, fig_volume
+    
+    # Get Data
+    df = stream_manager.get_dataframe(ticker)
     
     if df.empty:
-        fig = go.Figure()
-        fig.add_annotation(
-            text=f"❌ Keine Daten für {ticker} verfügbar",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5,
-            showarrow=False,
-            font=dict(size=18, color="red")
-        )
-        return fig
+        fig_main = go.Figure()
+        fig_main.add_annotation(text=f"⏳ Warte auf Daten für {ticker}...",
+                               xref="paper", yref="paper", x=0.5, y=0.5,
+                               showarrow=False, font=dict(size=16, color="orange"))
+        fig_volume = go.Figure()
+        return fig_main, fig_volume
     
-    print(f"✓ {len(df)} Datenpunkte geladen")
-    print(f"Zeitspanne VOR Filter: {df['timestamp'].min()} bis {df['timestamp'].max()}")
-    
-    # ✨ WICHTIG: Filter auf Regular Market Hours
-    print("\n🔍 Filtere auf Regular Market Hours...")
+    # Filter Market Hours
     df_filtered = MarketHours.filter_regular_hours(df, timestamp_col='timestamp')
     
-    print(f"✓ Nach Filter: {len(df_filtered)} Datenpunkte")
-    
     if df_filtered.empty:
-        fig = go.Figure()
-        fig.add_annotation(
-            text=f"⚠️ Keine Daten während Regular Market Hours für {ticker}\n(Nur Daten von Mo-Fr 9:30 AM - 4:00 PM ET werden angezeigt)",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5,
-            showarrow=False,
-            font=dict(size=16, color="orange"),
-            align="center"
-        )
-        return fig
+        df_filtered = df  # Use unfiltered if no market hours data
     
-    print(f"Zeitspanne NACH Filter: {df_filtered['timestamp'].min()} bis {df_filtered['timestamp'].max()}")
+    # Main Chart
+    fig_main = go.Figure()
     
-    # Erstelle Candlestick Chart
-    fig = go.Figure()
+    if chart_type == 'candlestick':
+        fig_main.add_trace(go.Candlestick(
+            x=df_filtered['timestamp'],
+            open=df_filtered['open'],
+            high=df_filtered['high'],
+            low=df_filtered['low'],
+            close=df_filtered['close'],
+            name='OHLC',
+            increasing_line_color='#26a69a',
+            decreasing_line_color='#ef5350'
+        ))
+    else:  # line
+        fig_main.add_trace(go.Scatter(
+            x=df_filtered['timestamp'],
+            y=df_filtered['close'],
+            mode='lines',
+            name='Close',
+            line=dict(color='#2196f3', width=2)
+        ))
     
-    # Candlestick
-    fig.add_trace(go.Candlestick(
-        x=df_filtered['timestamp'],
-        open=df_filtered['open'],
-        high=df_filtered['high'],
-        low=df_filtered['low'],
-        close=df_filtered['close'],
-        name='OHLC',
-        increasing_line_color='#26a69a',
-        decreasing_line_color='#ef5350'
-    ))
-    
-    # VWAP Line
-    if 'vwap' in df_filtered.columns:
-        fig.add_trace(go.Scatter(
+    # VWAP
+    show_vwap = 'show' in vwap_values
+    if show_vwap and 'vwap' in df_filtered.columns:
+        fig_main.add_trace(go.Scatter(
             x=df_filtered['timestamp'],
             y=df_filtered['vwap'],
             mode='lines',
             name='VWAP',
-            line=dict(color='#2196f3', width=2, dash='dash'),
-            opacity=0.7
+            line=dict(color='#ff9800', width=2, dash='dash'),
+            opacity=0.8
         ))
     
-    # Layout mit Wochenend-Entfernung
-    fig.update_layout(
-        title={
-            'text': f'{ticker} - Historical Data (Regular Market Hours)<br><sub>{len(df_filtered)} bars | {df_filtered["timestamp"].min().strftime("%Y-%m-%d")} to {df_filtered["timestamp"].max().strftime("%Y-%m-%d")}</sub>',
-            'x': 0.5,
-            'xanchor': 'center',
-            'font': {'size': 20}
-        },
-        xaxis_title='Time (ET - Eastern Time)',
-        yaxis_title='Price ($)',
+    # Layout
+    buffer_status = f" | Buffer: {len(df_filtered)}/600" if state['aggregation'] == 'second' else ""
+    
+    fig_main.update_layout(
+        title=f'{ticker} - Live {state["aggregation"].title()} Data{buffer_status}',
+        xaxis_title='Zeit (ET)',
+        yaxis_title='Preis ($)',
         template='plotly_white',
         height=600,
         hovermode='x unified',
-        xaxis=dict(
-            rangeslider=dict(visible=False),
-            type='date',
-            showgrid=True,
-            gridcolor='#e0e0e0',
-            # ✨ NEU: Entferne Wochenenden und Nicht-Handelsstunden
-            rangebreaks=[
-                # Wochenenden ausblenden (Samstag & Sonntag)
-                dict(bounds=["sat", "mon"]),
-                # Nicht-Handelsstunden ausblenden (16:00 - 09:30 ET)
-                dict(bounds=[16, 9.5], pattern="hour"),
-            ]
-        ),
-        yaxis=dict(
-            showgrid=True,
-            gridcolor='#e0e0e0'
-        ),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        )
+        xaxis=dict(rangeslider=dict(visible=False), showgrid=True),
+        yaxis=dict(showgrid=True),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     
-    # Market Hours Hinweis
-    fig.add_annotation(
-        text="📅 Nur Regular Market Hours (Mo-Fr 9:30 AM - 4:00 PM ET) | Wochenenden ausgeblendet",
-        xref="paper", yref="paper",
-        x=0.5, y=-0.12,
-        showarrow=False,
-        font=dict(size=12, color="gray"),
-        xanchor="center"
+    # Volume Chart
+    fig_volume = go.Figure()
+    
+    colors = ['#26a69a' if close >= open else '#ef5350' 
+              for close, open in zip(df_filtered['close'], df_filtered['open'])]
+    
+    fig_volume.add_trace(go.Bar(
+        x=df_filtered['timestamp'],
+        y=df_filtered['volume'],
+        name='Volume',
+        marker=dict(color=colors, opacity=0.7)
+    ))
+    
+    fig_volume.update_layout(
+        title='Volume',
+        xaxis_title='',
+        yaxis_title='Volume',
+        template='plotly_white',
+        height=200,
+        margin=dict(t=40, b=0),
+        showlegend=False
     )
     
-    return fig
-
-
-# Callback: Market Hours Test
-@app.callback(
-    Output('test-output', 'children'),
-    Input('test-market-hours-btn', 'n_clicks'),
-    prevent_initial_call=True
-)
-def test_market_hours(n_clicks):
-    """
-    Test-Funktion für Market Hours Logic
-    """
-    if n_clicks == 0:
-        return ""
-    
-    # Führe Tests durch
-    now_et = MarketHours.get_eastern_time()
-    is_open = MarketHours.is_market_open()
-    session = MarketHours.get_market_session()
-    is_weekend = MarketHours.is_weekend(now_et)
-    is_holiday = MarketHours.is_market_holiday(now_et)
-    
-    results = html.Div([
-        html.H4("🧪 Market Hours Test Results"),
-        html.Ul([
-            html.Li(f"Aktuelle Zeit (ET): {now_et.strftime('%Y-%m-%d %H:%M:%S %Z')}"),
-            html.Li(f"Market Open: {'✅ Ja' if is_open else '❌ Nein'}"),
-            html.Li(f"Session: {session.value}"),
-            html.Li(f"Wochenende: {'✅ Ja' if is_weekend else '❌ Nein'}"),
-            html.Li(f"Feiertag: {'✅ Ja' if is_holiday else '❌ Nein'}"),
-            html.Li(f"Trading Day: {'✅ Ja' if MarketHours.is_trading_day(now_et) else '❌ Nein'}"),
-        ]),
-        html.P("✅ Alle Market Hours Funktionen arbeiten korrekt!", 
-               style={'color': 'green', 'fontWeight': 'bold', 'marginTop': '10px'})
-    ], style={
-        'backgroundColor': '#f0f8ff',
-        'padding': '15px',
-        'borderRadius': '8px',
-        'border': '1px solid #2196f3'
-    })
-    
-    return results
+    return fig_main, fig_volume
 
 
 # ============================================
@@ -584,8 +569,17 @@ if __name__ == '__main__':
     print("=" * 60)
     print("🚀 S&P 500 Stock Streaming Platform")
     print("=" * 60)
-    print(f"\n✓ Market Hours Status: {get_market_status_message()}")
-    print(f"\nÖffne Browser: http://127.0.0.1:8050")
+    print(f"\n✓ Market Status: {get_market_status_message()}")
+    print(f"\n🌐 Öffne Browser: http://127.0.0.1:8050")
+    print("=" * 60)
+    print("\n📝 Features:")
+    print("  • Live WebSocket Streaming (Minuten & Sekunden)")
+    print("  • Real-time Candlestick & Line Charts")
+    print("  • Volume Chart")
+    print("  • VWAP Indikator")
+    print("  • Market Hours Filtering")
+    print("  • Rolling Window (600 Punkte bei Sekunden)")
+    print("\n⚠️  Hinweis: Massive.com API Key in .env erforderlich!")
     print("=" * 60)
     
     app.run_server(debug=True, port=8050, host='127.0.0.1')
