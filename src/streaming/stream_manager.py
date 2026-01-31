@@ -1,21 +1,13 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Fri Jan 30 21:33:41 2026
-
-@author: twi-dev
-"""
-
 # src/streaming/stream_manager.py
 """
 Stream Manager für Live-Daten
-Verwaltet Rolling Windows und Data Buffers
+MIT Pre-Loading von historischen Daten
 """
 
 from collections import deque
 from typing import Dict, List, Optional
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
 import pytz
 
@@ -29,6 +21,7 @@ class StreamDataManager:
     Features:
     - Rolling Window für Sekunden-Daten (600 Punkte)
     - Buffer für Minuten-Daten
+    - Pre-Loading von historischen Daten
     - Thread-safe Operations
     - Automatische Market Hours Filterung
     """
@@ -49,10 +42,46 @@ class StreamDataManager:
         # Statistics
         self.total_messages = 0
         self.messages_per_ticker: Dict[str, int] = {}
+        
+        # Pre-load Status
+        self.preloaded_tickers: List[str] = []
+    
+    def preload_historical_data(self, ticker: str, df: pd.DataFrame):
+        """
+        Lädt historische Daten in den Buffer
+        
+        Args:
+            ticker: Ticker Symbol
+            df: DataFrame mit historischen OHLCV Daten
+        """
+        with self.lock:
+            if ticker not in self.data_buffers:
+                self.data_buffers[ticker] = deque(maxlen=self.max_points)
+                self.messages_per_ticker[ticker] = 0
+            
+            # Konvertiere DataFrame zu Dict-Liste
+            for _, row in df.iterrows():
+                data_point = {
+                    'symbol': ticker,
+                    'timestamp': row.get('timestamp'),
+                    'timestamp_et': row.get('timestamp'),
+                    'open': row.get('open'),
+                    'high': row.get('high'),
+                    'low': row.get('low'),
+                    'close': row.get('close'),
+                    'volume': row.get('volume'),
+                    'vwap': row.get('vwap'),
+                    'transactions': row.get('transactions', 0),
+                    'is_preloaded': True  # Markiere als pre-loaded
+                }
+                self.data_buffers[ticker].append(data_point)
+            
+            self.preloaded_tickers.append(ticker)
+            print(f"✓ {len(df)} historische Datenpunkte für {ticker} geladen")
     
     def add_data_point(self, ticker: str, data: Dict):
         """
-        Fügt Datenpunkt hinzu
+        Fügt Live-Datenpunkt hinzu
         
         Args:
             ticker: Ticker Symbol
@@ -66,7 +95,6 @@ class StreamDataManager:
             
             # Timestamp zu Eastern Time konvertieren
             if 'timestamp' in data and data['timestamp']:
-                # Massive gibt Unix timestamp in Millisekunden
                 timestamp_ms = data['timestamp']
                 dt_utc = datetime.fromtimestamp(timestamp_ms / 1000, tz=pytz.UTC)
                 dt_et = MarketHours.utc_to_eastern(dt_utc)
@@ -75,10 +103,12 @@ class StreamDataManager:
             # Prüfe Market Hours (nur Regular Hours)
             if 'timestamp_et' in data:
                 if not MarketHours.is_market_open(data['timestamp_et']):
-                    # Ignoriere Daten außerhalb Market Hours
                     return
             
-            # Füge Datenpunkt hinzu
+            # Markiere als Live-Daten
+            data['is_preloaded'] = False
+            
+            # Füge hinzu
             self.data_buffers[ticker].append(data)
             self.messages_per_ticker[ticker] += 1
             self.total_messages += 1
@@ -115,34 +145,66 @@ class StreamDataManager:
             return df
     
     def get_latest_point(self, ticker: str) -> Optional[Dict]:
-        """Gibt letzten Datenpunkt für Ticker zurück"""
+        """Gibt letzten Datenpunkt zurück"""
         with self.lock:
             if ticker not in self.data_buffers or not self.data_buffers[ticker]:
                 return None
             return self.data_buffers[ticker][-1]
     
     def get_buffer_size(self, ticker: str) -> int:
-        """Gibt Anzahl Datenpunkte für Ticker zurück"""
+        """Gibt Anzahl Datenpunkte zurück"""
         with self.lock:
             if ticker not in self.data_buffers:
                 return 0
             return len(self.data_buffers[ticker])
     
     def is_buffer_full(self, ticker: str) -> bool:
-        """Prüft ob Buffer voll ist (600 Punkte)"""
+        """Prüft ob Buffer voll ist"""
         return self.get_buffer_size(ticker) >= self.max_points
+    
+    def get_buffer_status(self, ticker: str) -> Dict:
+        """Gibt detaillierten Buffer-Status zurück"""
+        with self.lock:
+            if ticker not in self.data_buffers:
+                return {
+                    'size': 0,
+                    'max': self.max_points,
+                    'percentage': 0,
+                    'is_full': False,
+                    'preloaded': False,
+                    'live_count': 0
+                }
+            
+            buffer = self.data_buffers[ticker]
+            data_list = list(buffer)
+            
+            preloaded_count = sum(1 for d in data_list if d.get('is_preloaded', False))
+            live_count = len(data_list) - preloaded_count
+            
+            return {
+                'size': len(buffer),
+                'max': self.max_points,
+                'percentage': int((len(buffer) / self.max_points) * 100),
+                'is_full': len(buffer) >= self.max_points,
+                'preloaded': ticker in self.preloaded_tickers,
+                'preloaded_count': preloaded_count,
+                'live_count': live_count
+            }
     
     def clear_ticker(self, ticker: str):
         """Löscht Buffer für Ticker"""
         with self.lock:
             if ticker in self.data_buffers:
                 self.data_buffers[ticker].clear()
+            if ticker in self.preloaded_tickers:
+                self.preloaded_tickers.remove(ticker)
     
     def clear_all(self):
         """Löscht alle Buffer"""
         with self.lock:
             self.data_buffers.clear()
             self.messages_per_ticker.clear()
+            self.preloaded_tickers.clear()
             self.total_messages = 0
     
     def get_statistics(self) -> Dict:
@@ -155,5 +217,6 @@ class StreamDataManager:
                 'buffer_sizes': {
                     ticker: len(buffer) 
                     for ticker, buffer in self.data_buffers.items()
-                }
+                },
+                'preloaded_tickers': self.preloaded_tickers.copy()
             }

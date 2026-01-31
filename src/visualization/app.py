@@ -1,26 +1,29 @@
 # src/visualization/app.py
 """
-S&P 500 Stock Streaming Platform - Full Application
-MIT LIVE WEBSOCKET STREAMING & REAL-TIME CHARTS
+S&P 500 Stock Streaming Platform - PHASE 6 COMPLETE
+- Volume Chart unterhalb Main Chart
+- Historische 600 Punkte Pre-Loading
+- Rolling Window für Sekunden
+- VWAP Toggle
 """
 
 import dash
-from dash import dcc, html, Input, Output, State, dash_table, ctx, ALL
-import plotly.graph_objs as go
+from dash import dcc, html, Input, Output, State, dash_table, ctx
 from plotly.subplots import make_subplots
+import plotly.graph_objs as go
 import pandas as pd
 from pathlib import Path
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# Füge src zum Path hinzu
+# Imports
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from src.utils.helpers import SP500TickerLoader
 from src.api.massive_rest_client import MassiveRESTClient
 from src.utils.market_hours import MarketHours, is_market_open, get_market_status_message
-from src.streaming.websocket_client import StockWebSocketClient
+from src.streaming.websocket_client_direct import DirectMassiveWebSocketClient as StockWebSocketClient
 from src.streaming.stream_manager import StreamDataManager
 
 # ============================================
@@ -34,7 +37,6 @@ app.title = "S&P 500 Stock Streaming"
 ticker_loader = SP500TickerLoader()
 api_client = MassiveRESTClient()
 
-# Streaming Components (Global)
 ws_client: StockWebSocketClient = None
 stream_manager: StreamDataManager = None
 streaming_active = False
@@ -45,10 +47,9 @@ current_aggregation = 'minute'
 # ============================================
 
 app.layout = html.Div([
-    html.H1("📊 S&P 500 Stock Streaming Platform", 
+    html.H1("📊 S&P 500 Stock Streaming Platform - Phase 6", 
             style={'textAlign': 'center', 'color': '#2c3e50', 'marginBottom': '20px'}),
     
-    # Tabs
     dcc.Tabs(id='main-tabs', value='streaming-tab', children=[
         dcc.Tab(label='🔴 Streaming (Live)', value='streaming-tab'),
         dcc.Tab(label='📈 Historische Daten', value='historical-tab', disabled=True),
@@ -57,7 +58,7 @@ app.layout = html.Div([
     
     html.Div(id='tab-content', style={'padding': '20px'}),
     
-    # Intervals für Updates
+    # Intervals
     dcc.Interval(id='interval-market-status', interval=10*1000, n_intervals=0),
     dcc.Interval(id='interval-live-chart', interval=2*1000, n_intervals=0, disabled=True),
     dcc.Interval(id='interval-stats', interval=5*1000, n_intervals=0, disabled=True),
@@ -74,9 +75,9 @@ app.layout = html.Div([
 
 def create_streaming_tab():
     return html.Div([
-        html.H2("🎯 Real-time Stock Streaming with WebSocket"),
+        html.H2("🎯 Real-time Stock Streaming (Phase 6 Complete)"),
         
-        # Market Hours Status
+        # Market Status
         html.Div(id='market-status-card', style={'marginBottom': '30px'}),
         
         # Controls Row
@@ -90,21 +91,21 @@ def create_streaming_tab():
                     multi=True,
                     placeholder='Ticker auswählen...',
                 ),
-                html.Button('Top 10 laden', id='load-top10-btn', n_clicks=0,
-                           style={'marginTop': '10px', 'marginRight': '10px'}),
+                html.Button('Top 5 laden', id='load-top10-btn', n_clicks=0,
+                           style={'marginTop': '10px'}),
             ], style={'width': '48%', 'display': 'inline-block', 'verticalAlign': 'top'}),
             
             # Right: Streaming Controls
             html.Div([
                 html.H3("🎮 Streaming Controls"),
                 
-                # Aggregation Selection
-                html.Label("Aggregation:", style={'fontWeight': 'bold', 'marginRight': '10px'}),
+                # Aggregation
+                html.Label("Aggregation:", style={'fontWeight': 'bold'}),
                 dcc.RadioItems(
                     id='aggregation-selector',
                     options=[
-                        {'label': ' Minuten-Aggregation (AM.*)', 'value': 'minute'},
-                        {'label': ' Sekunden-Aggregation (A.*)', 'value': 'second'}
+                        {'label': ' Minuten (AM.*)', 'value': 'minute'},
+                        {'label': ' Sekunden (A.*)', 'value': 'second'}
                     ],
                     value='minute',
                     inline=True,
@@ -112,7 +113,7 @@ def create_streaming_tab():
                 ),
                 
                 # Chart Type
-                html.Label("Chart Type:", style={'fontWeight': 'bold', 'marginRight': '10px'}),
+                html.Label("Chart Type:", style={'fontWeight': 'bold'}),
                 dcc.RadioItems(
                     id='chart-type-selector',
                     options=[
@@ -126,21 +127,20 @@ def create_streaming_tab():
                 
                 # VWAP Toggle
                 html.Div([
-                    html.Label("VWAP:", style={'fontWeight': 'bold', 'marginRight': '10px'}),
                     dcc.Checklist(
                         id='vwap-toggle',
-                        options=[{'label': ' Anzeigen', 'value': 'show'}],
-                        value=[],
+                        options=[{'label': ' VWAP anzeigen', 'value': 'show'}],
+                        value=['show'],
                         inline=True
                     )
                 ], style={'marginBottom': '15px'}),
                 
-                # Chart Ticker Selection
+                # Chart Ticker
                 html.Div([
-                    html.Label("📊 Ticker für Chart:", style={'fontWeight': 'bold'}),
+                    html.Label("📊 Chart Ticker:", style={'fontWeight': 'bold'}),
                     dcc.Dropdown(
                         id='chart-ticker-dropdown',
-                        placeholder='Wählen Sie einen Ticker...',
+                        placeholder='Ticker wählen...',
                         clearable=False
                     )
                 ], id='chart-ticker-selector', style={'marginTop': '10px', 'display': 'none'}),
@@ -162,7 +162,7 @@ def create_streaming_tab():
             html.Span(id='streaming-status', style={'marginLeft': '20px', 'fontSize': '16px'})
         ], style={'marginTop': '20px', 'marginBottom': '20px'}),
         
-        # Statistics Box
+        # Statistics
         html.Div(id='streaming-stats', style={
             'padding': '15px', 'backgroundColor': '#f8f9fa', 'borderRadius': '5px',
             'marginBottom': '20px'
@@ -174,16 +174,14 @@ def create_streaming_tab():
             html.Div(id='ticker-table')
         ], style={'marginTop': '30px', 'marginBottom': '30px'}),
         
-        # Live Charts
+        # Charts mit Subplots (Main + Volume)
         html.Div([
-            html.H3("📈 Live Chart"),
-            dcc.Graph(id='live-chart', style={'height': '600px'}),
-            dcc.Graph(id='volume-chart', style={'height': '200px'})
+            html.H3("📈 Live Chart mit Volume"),
+            dcc.Graph(id='combined-chart', style={'height': '800px'})
         ]),
         
         # Hidden Stores
         dcc.Store(id='all-tickers-store'),
-        dcc.Store(id='selected-tickers-store'),
     ])
 
 
@@ -191,7 +189,6 @@ def create_streaming_tab():
 # Callbacks
 # ============================================
 
-# Tab Content
 @app.callback(
     Output('tab-content', 'children'),
     Input('main-tabs', 'value')
@@ -202,7 +199,6 @@ def render_tab_content(active_tab):
     return html.Div("Tab in Entwicklung...")
 
 
-# Load Ticker Options
 @app.callback(
     Output('ticker-dropdown', 'options'),
     Output('all-tickers-store', 'data'),
@@ -217,7 +213,6 @@ def load_ticker_options(tab):
     return options, df.to_dict('records')
 
 
-# Market Status Update
 @app.callback(
     Output('market-status-card', 'children'),
     Input('interval-market-status', 'n_intervals')
@@ -248,22 +243,17 @@ def update_market_status(n_intervals):
              'borderRadius': '10px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'})
 
 
-# Load Top 10 Tickers
 @app.callback(
     Output('ticker-dropdown', 'value'),
     Input('load-top10-btn', 'n_clicks'),
-    State('all-tickers-store', 'data'),
     prevent_initial_call=True
 )
-def load_top_tickers(n_clicks, all_tickers):
-    if n_clicks > 0 and all_tickers:
-        # Top 10: AAPL, MSFT, GOOGL, AMZN, TSLA, META, NVDA, JPM, V, JNJ
-        top_symbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'V', 'JNJ']
-        return top_symbols[:5]  # Nur 5 für Demo (weniger API Last)
+def load_top_tickers(n_clicks):
+    if n_clicks > 0:
+        return ['AAPL', 'MSFT', 'GOOGL']  # Nur 3 für Demo
     return []
 
 
-# Update Chart Ticker Dropdown
 @app.callback(
     Output('chart-ticker-dropdown', 'options'),
     Output('chart-ticker-dropdown', 'value'),
@@ -279,7 +269,6 @@ def update_chart_ticker_options(selected_tickers):
     return options, default, {'marginTop': '10px', 'display': 'block'}
 
 
-# Ticker Table
 @app.callback(
     Output('ticker-table', 'children'),
     Input('ticker-dropdown', 'value'),
@@ -294,7 +283,7 @@ def update_ticker_table(selected_symbols, n_intervals, all_tickers, streaming_st
     df = pd.DataFrame(all_tickers)
     selected_df = df[df['Symbol'].isin(selected_symbols)].copy()
     
-    # Wenn Streaming aktiv, füge Live-Daten hinzu
+    # Live-Daten hinzufügen
     if streaming_state['active'] and stream_manager:
         for idx, row in selected_df.iterrows():
             symbol = row['Symbol']
@@ -317,14 +306,12 @@ def update_ticker_table(selected_symbols, n_intervals, all_tickers, streaming_st
         columns=[{'name': col, 'id': col} for col in columns],
         style_cell={'textAlign': 'left', 'padding': '10px'},
         style_header={'backgroundColor': '#3498db', 'color': 'white', 'fontWeight': 'bold'},
-        style_data_conditional=[
-            {'if': {'row_index': 'odd'}, 'backgroundColor': '#f9f9f9'}
-        ]
+        style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': '#f9f9f9'}]
     )
     return table
 
 
-# Start Streaming
+# ✨ START STREAMING mit Pre-Load
 @app.callback(
     Output('streaming-state', 'data'),
     Output('start-streaming-btn', 'disabled'),
@@ -344,23 +331,54 @@ def control_streaming(start_clicks, stop_clicks, selected_tickers, aggregation, 
     
     triggered_id = ctx.triggered_id
     
-    # Start Streaming
+    # START
     if triggered_id == 'start-streaming-btn':
         if not selected_tickers:
-            return state, False, True, True, True, html.Span("⚠️ Keine Ticker ausgewählt", 
-                                                             style={'color': 'orange'})
+            return state, False, True, True, True, html.Span("⚠️ Keine Ticker", style={'color': 'orange'})
         
         try:
-            print(f"\n🚀 Starte WebSocket Streaming...")
+            print(f"\n🚀 Starte Streaming mit Pre-Load...")
             print(f"   Ticker: {selected_tickers}")
             print(f"   Aggregation: {aggregation}")
             
-            # Initialize Components
-            stream_manager = StreamDataManager(max_points=600)
-            ws_client = StockWebSocketClient(aggregation=aggregation)
+            # 1. Initialize Stream Manager
+            max_points = 600 if aggregation == 'second' else 600
+            stream_manager = StreamDataManager(max_points=max_points)
             current_aggregation = aggregation
             
-            # Set Message Callback
+            # 2. ✨ Pre-Load historische Daten (nur bei Minuten)
+            if aggregation == 'minute':
+                print("\n📊 Lade historische 600 Minuten-Punkte...")
+                for ticker in selected_tickers:
+                    try:
+                        # Lade letzte 600 Minuten (~2.5 Handelstage)
+                        from_date = (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d')
+                        to_date = datetime.now().strftime('%Y-%m-%d')
+                        
+                        df_hist = api_client.get_aggregates(
+                            ticker, 
+                            timespan='minute',
+                            from_date=from_date,
+                            to_date=to_date,
+                            limit=600
+                        )
+                        
+                        if not df_hist.empty:
+                            # Filter auf Market Hours
+                            df_hist = MarketHours.filter_regular_hours(df_hist)
+                            # Nehme nur die letzten 600
+                            df_hist = df_hist.tail(600)
+                            
+                            # Pre-load in Buffer
+                            stream_manager.preload_historical_data(ticker, df_hist)
+                        
+                    except Exception as e:
+                        print(f"⚠️ Pre-Load für {ticker} fehlgeschlagen: {e}")
+            
+            # 3. Initialize WebSocket
+            ws_client = StockWebSocketClient(aggregation=aggregation)
+            
+            # Set Callback
             def handle_message(data):
                 symbol = data.get('symbol')
                 if symbol in selected_tickers:
@@ -368,7 +386,7 @@ def control_streaming(start_clicks, stop_clicks, selected_tickers, aggregation, 
             
             ws_client.set_message_callback(handle_message)
             
-            # Subscribe & Start
+            # 4. Subscribe & Start
             ws_client.subscribe(selected_tickers)
             ws_client.start()
             
@@ -381,14 +399,14 @@ def control_streaming(start_clicks, stop_clicks, selected_tickers, aggregation, 
             return new_state, True, False, False, False, status
             
         except Exception as e:
-            print(f"✗ Streaming Start Fehler: {e}")
+            print(f"✗ Streaming Fehler: {e}")
             import traceback
             traceback.print_exc()
             
             status = html.Span(f"❌ Fehler: {str(e)}", style={'color': 'red'})
             return state, False, True, True, True, status
     
-    # Stop Streaming
+    # STOP
     elif triggered_id == 'stop-streaming-btn':
         if ws_client:
             ws_client.stop()
@@ -398,24 +416,37 @@ def control_streaming(start_clicks, stop_clicks, selected_tickers, aggregation, 
         stream_manager = None
         
         new_state = {'active': False, 'aggregation': 'minute'}
-        status = html.Span("⚫ Streaming gestoppt", style={'color': 'gray'})
+        status = html.Span("⚫ Gestoppt", style={'color': 'gray'})
         
         return new_state, False, True, True, True, status
     
     return state, False, True, True, True, ""
 
 
-# Streaming Statistics
+# Statistics
 @app.callback(
     Output('streaming-stats', 'children'),
     Input('interval-stats', 'n_intervals'),
-    State('streaming-state', 'data')
+    State('streaming-state', 'data'),
+    State('chart-ticker-dropdown', 'value')
 )
-def update_streaming_stats(n_intervals, state):
+def update_streaming_stats(n_intervals, state, chart_ticker):
     if not state['active'] or not stream_manager:
         return html.P("Streaming nicht aktiv", style={'color': '#666'})
     
     stats = stream_manager.get_statistics()
+    
+    # Buffer Status für Chart-Ticker
+    buffer_info = ""
+    if chart_ticker:
+        buffer_status = stream_manager.get_buffer_status(chart_ticker)
+        buffer_info = html.Div([
+            html.Strong(f"Buffer Status ({chart_ticker}): "),
+            html.Span(f"{buffer_status['size']}/{buffer_status['max']} Punkte "),
+            html.Span(f"({buffer_status['percentage']}%) ", 
+                     style={'color': 'green' if buffer_status['is_full'] else 'orange'}),
+            html.Span(f"| Pre-loaded: {buffer_status['preloaded_count']}, Live: {buffer_status['live_count']}")
+        ], style={'marginTop': '10px', 'fontSize': '14px'})
     
     return html.Div([
         html.H4("📊 Streaming Statistiken", style={'marginBottom': '10px'}),
@@ -435,130 +466,135 @@ def update_streaming_stats(n_intervals, state):
                 html.Span(current_aggregation.title())
             ], style={'display': 'inline-block'}),
         ]),
-        
-        html.Div([
-            html.P("Buffer Status:", style={'fontWeight': 'bold', 'marginTop': '10px', 
-                                           'marginBottom': '5px'}),
-            html.Ul([
-                html.Li(f"{symbol}: {size} Datenpunkte")
-                for symbol, size in stats['buffer_sizes'].items()
-            ])
-        ]) if stats['buffer_sizes'] else None
+        buffer_info
     ])
 
 
-# Live Chart Update
+# ✨ COMBINED CHART (Main + Volume)
 @app.callback(
-    Output('live-chart', 'figure'),
-    Output('volume-chart', 'figure'),
+    Output('combined-chart', 'figure'),
     Input('interval-live-chart', 'n_intervals'),
     State('chart-ticker-dropdown', 'value'),
     State('chart-type-selector', 'value'),
     State('vwap-toggle', 'value'),
     State('streaming-state', 'data')
 )
-def update_live_chart(n_intervals, ticker, chart_type, vwap_values, state):
+def update_combined_chart(n_intervals, ticker, chart_type, vwap_values, state):
     if not state['active'] or not stream_manager or not ticker:
-        # Empty charts
-        fig_main = go.Figure()
-        fig_main.add_annotation(text="⏸️ Warte auf Streaming-Daten...",
-                               xref="paper", yref="paper", x=0.5, y=0.5,
-                               showarrow=False, font=dict(size=16, color="gray"))
-        
-        fig_volume = go.Figure()
-        return fig_main, fig_volume
+        # Empty chart
+        fig = make_subplots(
+            rows=2, cols=1,
+            row_heights=[0.7, 0.3],
+            vertical_spacing=0.03,
+            subplot_titles=('Warte auf Streaming-Daten...', '')
+        )
+        return fig
     
     # Get Data
     df = stream_manager.get_dataframe(ticker)
     
     if df.empty:
-        fig_main = go.Figure()
-        fig_main.add_annotation(text=f"⏳ Warte auf Daten für {ticker}...",
-                               xref="paper", yref="paper", x=0.5, y=0.5,
-                               showarrow=False, font=dict(size=16, color="orange"))
-        fig_volume = go.Figure()
-        return fig_main, fig_volume
+        fig = make_subplots(rows=2, cols=1, row_heights=[0.7, 0.3])
+        fig.add_annotation(text=f"⏳ Warte auf Daten für {ticker}...",
+                          xref="paper", yref="paper", x=0.5, y=0.5,
+                          showarrow=False, font=dict(size=16, color="orange"))
+        return fig
     
     # Filter Market Hours
     df_filtered = MarketHours.filter_regular_hours(df, timestamp_col='timestamp')
-    
     if df_filtered.empty:
-        df_filtered = df  # Use unfiltered if no market hours data
+        df_filtered = df
     
-    # Main Chart
-    fig_main = go.Figure()
+    # Buffer Status
+    buffer_status = stream_manager.get_buffer_status(ticker)
     
-    if chart_type == 'candlestick':
-        fig_main.add_trace(go.Candlestick(
-            x=df_filtered['timestamp'],
-            open=df_filtered['open'],
-            high=df_filtered['high'],
-            low=df_filtered['low'],
-            close=df_filtered['close'],
-            name='OHLC',
-            increasing_line_color='#26a69a',
-            decreasing_line_color='#ef5350'
-        ))
-    else:  # line
-        fig_main.add_trace(go.Scatter(
-            x=df_filtered['timestamp'],
-            y=df_filtered['close'],
-            mode='lines',
-            name='Close',
-            line=dict(color='#2196f3', width=2)
-        ))
-    
-    # VWAP
-    show_vwap = 'show' in vwap_values
-    if show_vwap and 'vwap' in df_filtered.columns:
-        fig_main.add_trace(go.Scatter(
-            x=df_filtered['timestamp'],
-            y=df_filtered['vwap'],
-            mode='lines',
-            name='VWAP',
-            line=dict(color='#ff9800', width=2, dash='dash'),
-            opacity=0.8
-        ))
-    
-    # Layout
-    buffer_status = f" | Buffer: {len(df_filtered)}/600" if state['aggregation'] == 'second' else ""
-    
-    fig_main.update_layout(
-        title=f'{ticker} - Live {state["aggregation"].title()} Data{buffer_status}',
-        xaxis_title='Zeit (ET)',
-        yaxis_title='Preis ($)',
-        template='plotly_white',
-        height=600,
-        hovermode='x unified',
-        xaxis=dict(rangeslider=dict(visible=False), showgrid=True),
-        yaxis=dict(showgrid=True),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    # Create Subplots
+    fig = make_subplots(
+        rows=2, cols=1,
+        row_heights=[0.75, 0.25],
+        vertical_spacing=0.03,
+        subplot_titles=(
+            f'{ticker} - Live {state["aggregation"].title()} | Buffer: {buffer_status["size"]}/{buffer_status["max"]}',
+            'Volume'
+        ),
+        specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
     )
     
-    # Volume Chart
-    fig_volume = go.Figure()
+    # Main Chart
+    if chart_type == 'candlestick':
+        fig.add_trace(
+            go.Candlestick(
+                x=df_filtered['timestamp'],
+                open=df_filtered['open'],
+                high=df_filtered['high'],
+                low=df_filtered['low'],
+                close=df_filtered['close'],
+                name='OHLC',
+                increasing_line_color='#26a69a',
+                decreasing_line_color='#ef5350'
+            ),
+            row=1, col=1
+        )
+    else:  # line
+        fig.add_trace(
+            go.Scatter(
+                x=df_filtered['timestamp'],
+                y=df_filtered['close'],
+                mode='lines',
+                name='Close',
+                line=dict(color='#2196f3', width=2)
+            ),
+            row=1, col=1
+        )
     
+    # VWAP
+    if 'show' in vwap_values and 'vwap' in df_filtered.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df_filtered['timestamp'],
+                y=df_filtered['vwap'],
+                mode='lines',
+                name='VWAP',
+                line=dict(color='#ff9800', width=2, dash='dash'),
+                opacity=0.8
+            ),
+            row=1, col=1
+        )
+    
+    # Volume Chart
     colors = ['#26a69a' if close >= open else '#ef5350' 
               for close, open in zip(df_filtered['close'], df_filtered['open'])]
     
-    fig_volume.add_trace(go.Bar(
-        x=df_filtered['timestamp'],
-        y=df_filtered['volume'],
-        name='Volume',
-        marker=dict(color=colors, opacity=0.7)
-    ))
-    
-    fig_volume.update_layout(
-        title='Volume',
-        xaxis_title='',
-        yaxis_title='Volume',
-        template='plotly_white',
-        height=200,
-        margin=dict(t=40, b=0),
-        showlegend=False
+    fig.add_trace(
+        go.Bar(
+            x=df_filtered['timestamp'],
+            y=df_filtered['volume'],
+            name='Volume',
+            marker=dict(color=colors, opacity=0.6),
+            showlegend=False
+        ),
+        row=2, col=1
     )
     
-    return fig_main, fig_volume
+    # Layout
+    fig.update_layout(
+        height=800,
+        template='plotly_white',
+        hovermode='x unified',
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=50, b=50)
+    )
+    
+    # X-Axis (nur für Volume zeigen)
+    fig.update_xaxes(showgrid=True, gridcolor='#e0e0e0', row=1, col=1)
+    fig.update_xaxes(title_text="Zeit (ET)", showgrid=True, gridcolor='#e0e0e0', row=2, col=1)
+    
+    # Y-Axis
+    fig.update_yaxes(title_text="Preis ($)", showgrid=True, gridcolor='#e0e0e0', row=1, col=1)
+    fig.update_yaxes(title_text="Volume", showgrid=False, row=2, col=1)
+    
+    return fig
 
 
 # ============================================
@@ -567,19 +603,19 @@ def update_live_chart(n_intervals, ticker, chart_type, vwap_values, state):
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("🚀 S&P 500 Stock Streaming Platform")
+    print("🚀 S&P 500 Stock Streaming Platform - PHASE 6")
     print("=" * 60)
     print(f"\n✓ Market Status: {get_market_status_message()}")
-    print(f"\n🌐 Öffne Browser: http://127.0.0.1:8050")
+    print(f"\n🌐 Browser: http://127.0.0.1:8050")
     print("=" * 60)
-    print("\n📝 Features:")
-    print("  • Live WebSocket Streaming (Minuten & Sekunden)")
-    print("  • Real-time Candlestick & Line Charts")
-    print("  • Volume Chart")
-    print("  • VWAP Indikator")
-    print("  • Market Hours Filtering")
-    print("  • Rolling Window (600 Punkte bei Sekunden)")
-    print("\n⚠️  Hinweis: Massive.com API Key in .env erforderlich!")
+    print("\n✨ Phase 6 Features:")
+    print("  • Combined Chart (Price + Volume)")
+    print("  • Pre-Loading von 600 historischen Minuten")
+    print("  • Rolling Window für Sekunden (600 Punkte)")
+    print("  • VWAP Toggle")
+    print("  • Buffer Status Anzeige")
+    print("  • Live-Updates alle 2 Sekunden")
+    print("\n💡 Tipp: Am Montag während Market Hours testen!")
     print("=" * 60)
     
     app.run_server(debug=True, port=8050, host='127.0.0.1')
