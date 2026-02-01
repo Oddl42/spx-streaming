@@ -111,3 +111,5 @@ dependencies:
     # Performance Monitoring
     - py-cpuinfo                     # CPU Info
     - psutil                         # System Monitoring
+
+#ToDo: Install Docker Docker-Compose: see https://docs.docker.com/engine/install/ubuntu/#install-using-the-repository
