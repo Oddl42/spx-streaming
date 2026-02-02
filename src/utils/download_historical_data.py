@@ -134,7 +134,7 @@ class HistoricalDataDownloader:
         except Exception as e:
             print(f"   ✗ Fehler: {e}")
             return 0
-    
+        '''    
     def download_minute_data(self, symbol: str) -> int:
         """
         Lädt Minute Bars für einen Ticker (seit 2023)
@@ -211,6 +211,7 @@ class HistoricalDataDownloader:
         except Exception as e:
             print(f"   ✗ Fehler: {e}")
             return 0
+        '''
     
     def update_download_status(self, symbol: str, timespan: str, 
                                status: str, bars: int = 0, error: str = None):
@@ -279,9 +280,9 @@ class HistoricalDataDownloader:
                 if skip_existing:
                     with self.db.get_session() as session:
                         daily_exists = session.query(DailyBar).filter_by(symbol=symbol).limit(1).count() > 0
-                        minute_exists = session.query(MinuteBar).filter_by(symbol=symbol).limit(1).count() > 0
+                        #minute_exists = session.query(MinuteBar).filter_by(symbol=symbol).limit(1).count() > 0
                         
-                        if daily_exists and minute_exists:
+                        if daily_exists: #and minute_exists:
                             print(f"✓ Daten bereits vorhanden, überspringe...")
                             self.stats['tickers_completed'] += 1
                             continue
@@ -300,14 +301,14 @@ class HistoricalDataDownloader:
                 time.sleep(self.delay_between_requests)
                 
                 # Download Minute
-                self.update_download_status(symbol, 'minute', 'running')
-                minute_bars = self.download_minute_data(symbol)
-                self.stats['minute_bars_total'] += minute_bars
+                #self.update_download_status(symbol, 'minute', 'running')
+                #minute_bars = self.download_minute_data(symbol)
+                #self.stats['minute_bars_total'] += minute_bars
                 
-                if minute_bars > 0:
-                    self.update_download_status(symbol, 'minute', 'completed', minute_bars)
-                else:
-                    self.update_download_status(symbol, 'minute', 'failed', 0, 'No data')
+               # if minute_bars > 0:
+               #     self.update_download_status(symbol, 'minute', 'completed', minute_bars)
+               # else:
+               #     self.update_download_status(symbol, 'minute', 'failed', 0, 'No data')
                 
                 self.stats['tickers_completed'] += 1
                 

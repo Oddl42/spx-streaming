@@ -32,7 +32,7 @@ class DirectMassiveWebSocketClient:
     """
     
     # Massive.com WebSocket Endpoints
-    WS_URL_DELAYED = "wss://socket.polygon.io/stocks"
+    WS_URL_DELAYED = "wss://delayed.polygon.io/stocks"
     WS_URL_REALTIME = "wss://socket.polygon.io/stocks/realtime"
     
     def __init__(
@@ -233,7 +233,7 @@ def test_direct_websocket():
             print(f"   Vol: {data.get('volume', 'N/A')}")
     
     # Client
-    client = DirectMassiveWebSocketClient(aggregation='minute')
+    client = DirectMassiveWebSocketClient(aggregation='second') 
     client.set_message_callback(handler)
     
     # Subscribe (nur 1 Ticker für Test)

@@ -374,6 +374,52 @@ class MarketHours:
         
         return df
 
+    @staticmethod
+    def filter_trading_days(df: pd.DataFrame, timestamp_col: str = 'timestamp') -> pd.DataFrame:
+        """
+        Filtert DataFrame auf Trading Days (Mo-Fr, keine Feiertage)
+        FÜR DAILY BARS - ohne Uhrzeit-Prüfung!
+        
+        Args:
+            df: DataFrame mit Zeitstempel
+            timestamp_col: Name der Timestamp-Spalte
+            
+        Returns:
+            pd.DataFrame: Gefiltertes DataFrame (nur Mo-Fr, keine Feiertage)
+        """
+        if df.empty or timestamp_col not in df.columns:
+            return df
+        
+        df = df.copy()
+        
+        # Sicherstellen dass Timestamps datetime sind
+        if not pd.api.types.is_datetime64_any_dtype(df[timestamp_col]):
+            df[timestamp_col] = pd.to_datetime(df[timestamp_col])
+        
+        # Konvertiere zu Eastern Time
+        if df[timestamp_col].dt.tz is None:
+            df[timestamp_col] = df[timestamp_col].dt.tz_localize(UTC)
+        
+        df[timestamp_col] = df[timestamp_col].dt.tz_convert(EASTERN)
+        
+        # Extrahiere Wochentag und Datum
+        df['_weekday'] = df[timestamp_col].dt.dayofweek
+        df['_date'] = df[timestamp_col].dt.date
+        
+        # ✅ NUR Wochentag-Filter (KEINE Uhrzeit!)
+        weekday_mask = df['_weekday'] < 5  # Montag-Freitag
+        
+        # Filter: Keine Feiertage
+        holiday_dates = [h.date() for h in MarketHours.MARKET_HOLIDAYS_2026]
+        holiday_mask = ~df['_date'].isin(holiday_dates)
+        
+        # Kombiniere Filter
+        mask = weekday_mask & holiday_mask
+        
+        # Cleanup
+        df_filtered = df[mask].drop(columns=['_weekday', '_date'])
+        
+        return df_filtered
 
 # Hilfsfunktionen für einfachere Verwendung
 

@@ -53,6 +53,7 @@ class StockWebSocketClient:
         
         self.aggregation = aggregation
         self.feed_type = Feed.Delayed if feed == 'delayed' else Feed.RealTime
+        self.feed_type = Feed.Delayed
         
         # Client
         self.client: Optional[MassiveWSClient] = None
@@ -80,7 +81,8 @@ class StockWebSocketClient:
         try:
             self.client = MassiveWSClient(
                 api_key=self.api_key,
-                feed=self.feed_type,
+                #feed=self.feed_type,
+                feed=Feed.Delayed,
                 market=Market.Stocks
             )
             self.is_connected = True
@@ -114,7 +116,7 @@ class StockWebSocketClient:
         
         try:
             # Subscribe
-            #self.client.subscribe(*patterns)
+            self.client.subscribe(*patterns)
             self.client.subscribe("AM.AAPL","AM.MSFT")
             print(f"✓ {len(patterns)} Subscriptions erfolgreich")
         except Exception as e:
@@ -273,8 +275,8 @@ def test_websocket():
     client.set_message_callback(message_handler)
     
     # Ticker abonnieren
-    #test_tickers = ['AAPL', 'MSFT']
-    test_tickers = ['AAPL']
+    test_tickers = ['AAPL', 'MSFT']
+    #test_tickers = ['AAPL']
     client.subscribe(test_tickers)
     
     # Stream starten
