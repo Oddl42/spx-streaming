@@ -15,13 +15,13 @@ dependencies:
   - pandas=2.2.*
   - numpy=1.26.*
   - pyarrow                          # Für effiziente Datenverarbeitung
-  - kafka-python                     # Kafka Client für Spark Streaming
+  - aiokafka                     # Kafka Client für Spark Streaming
   # ============================================
   # Database & Caching
   # ============================================
   - psycopg2                         # PostgreSQL/TimescaleDB Driver
   - sqlalchemy=2.0.*
-  - redis                            # Redis Client für Caching
+  - redis-py                            # Redis Client für Caching
   
   # ============================================
   # HTTP & WebSocket Clients
@@ -37,7 +37,7 @@ dependencies:
   - dash=2.17.*
   - plotly=5.22.*
   - dash-bootstrap-components        # Bootstrap Styling für Dash
-  - python-kaleido                          # Static Image Export (optional)
+  - kaleido-core                          # Static Image Export (optional)
   - dash-daq                       # DAQ Components (Slider, etc.)  
   - dash-table                     # Advanced Tables
   
@@ -96,11 +96,8 @@ dependencies:
     - pandas-ta-classic
     
     # TimescaleDB Toolkit (falls benötigt)
-    - timescaledb     # timescaledb-toolkit gibt es nicht
-    
-    # Directory Tree Visualization
-    - tree
-    
+    - timescaledb     # timescaledb
+
     # Logging & Monitoring
     - colorlog                       # Colored Logs
     - python-json-logger             # JSON Logging
