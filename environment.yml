@@ -93,7 +93,7 @@ dependencies:
     
     # Technical Analysis
     #- pandas-ta>=0.3.14  nicht mit Python 3.11 kompatibel
-    - pandas-ta-classical
+    - pandas-ta-classic
     
     # TimescaleDB Toolkit (falls benötigt)
     - timescaledb     # timescaledb-toolkit gibt es nicht
